@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "tradingview": {
+      "command": "node",
+      "args": [
+        "E:\\Anil Workspace\\tradingview-mcp\\src\\server.js"
+      ]
+    }
+  }
+}

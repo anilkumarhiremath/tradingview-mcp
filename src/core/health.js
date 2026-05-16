@@ -170,6 +170,7 @@ export async function launch({ port, kill_existing } = {}) {
       `${process.env.HOME}/Applications/TradingView.app/Contents/MacOS/TradingView`,
     ],
     win32: [
+      'C:\\TradingViewPortable\\TradingView.exe',
       `${process.env.LOCALAPPDATA}\\TradingView\\TradingView.exe`,
       `${process.env.PROGRAMFILES}\\TradingView\\TradingView.exe`,
       `${process.env['PROGRAMFILES(X86)']}\\TradingView\\TradingView.exe`,
@@ -184,6 +185,7 @@ export async function launch({ port, kill_existing } = {}) {
   };
 
   let tvPath = null;
+  let winStoreAppId = null;
   const candidates = pathMap[platform] || pathMap.linux;
   for (const p of candidates) {
     if (p && existsSync(p)) { tvPath = p; break; }
@@ -207,7 +209,17 @@ export async function launch({ port, kill_existing } = {}) {
     } catch { /* ignore */ }
   }
 
-  if (!tvPath) {
+  if (!tvPath && platform === 'win32') {
+    try {
+      const packageFamily = execSync(
+        'powershell -NoProfile -Command "(Get-AppxPackage *TradingView* | Select-Object -First 1 -ExpandProperty PackageFamilyName)"',
+        { timeout: 5000 }
+      ).toString().trim();
+      if (packageFamily) winStoreAppId = `${packageFamily}!TradingView.Desktop`;
+    } catch { /* ignore */ }
+  }
+
+  if (!tvPath && !winStoreAppId) {
     throw new Error(`TradingView not found on ${platform}. Searched: ${candidates.join(', ')}. Launch manually with: /path/to/TradingView --remote-debugging-port=${cdpPort}`);
   }
 
@@ -219,7 +231,27 @@ export async function launch({ port, kill_existing } = {}) {
     } catch { /* may not be running */ }
   }
 
-  const child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], { detached: true, stdio: 'ignore' });
+  const launchEnv = { ...process.env };
+  let child;
+  if (platform === 'win32') {
+    // Store/MSIX and some portable Electron builds read this env var more reliably than argv.
+    launchEnv.ELECTRON_EXTRA_LAUNCH_ARGS = `--remote-debugging-port=${cdpPort}`;
+  }
+
+  if (winStoreAppId) {
+    // Store/MSIX apps do not accept argv from explorer.
+    child = spawn('explorer.exe', [`shell:AppsFolder\\${winStoreAppId}`], {
+      detached: true,
+      stdio: 'ignore',
+      env: launchEnv,
+    });
+  } else {
+    child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], {
+      detached: true,
+      stdio: 'ignore',
+      env: launchEnv,
+    });
+  }
   child.unref();
 
   for (let i = 0; i < 15; i++) {
@@ -236,7 +268,7 @@ export async function launch({ port, kill_existing } = {}) {
       if (ready) {
         const info = JSON.parse(ready);
         return {
-          success: true, platform, binary: tvPath, pid: child.pid,
+          success: true, platform, binary: tvPath, app_id: winStoreAppId, pid: child.pid,
           cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
           browser: info.Browser, user_agent: info['User-Agent'],
         };
@@ -245,7 +277,7 @@ export async function launch({ port, kill_existing } = {}) {
   }
 
   return {
-    success: true, platform, binary: tvPath, pid: child.pid, cdp_port: cdpPort, cdp_ready: false,
+    success: true, platform, binary: tvPath, app_id: winStoreAppId, pid: child.pid, cdp_port: cdpPort, cdp_ready: false,
     warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
   };
 }
