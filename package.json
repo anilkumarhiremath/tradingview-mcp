@@ -15,6 +15,7 @@
     "start": "node src/server.js",
     "tv": "node src/cli/index.js",
     "alert:telegram": "node scripts/telegram_signal_watch.js",
+    "alert:smart": "node scripts/telegram_smart_alerts.js",
     "test": "node --test tests/e2e.test.js tests/pine_analyze.test.js",
     "test:e2e": "node --test tests/e2e.test.js",
     "test:unit": "node --test tests/pine_analyze.test.js tests/cli.test.js",
