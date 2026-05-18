@@ -12,6 +12,8 @@ const { values } = parseArgs({
     side: { type: 'string' },
     minScore: { type: 'string' },
     interval: { type: 'string', short: 'i' },
+    scanInterval: { type: 'string' },
+    loop: { type: 'boolean' },
     watch: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
@@ -28,6 +30,8 @@ Options:
   --minScore 60                         Minimum score for alerts. Default: 60.
   --watch                               Monitor the highest-scoring candidate after scan.
   --interval 3000                       Monitor interval in ms. Default: 3000.
+  --loop                                Keep rescanning until stopped.
+  --scanInterval 300000                 Full rescan interval in ms. Default: 300000.
 
 Env:
   TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required.`);
@@ -44,10 +48,15 @@ const topN = Number(values.top || 5);
 const minScore = Number(values.minScore || 60);
 const sideFilter = (values.side || 'both').toLowerCase();
 const interval = Number(values.interval || 3000);
+const scanInterval = Number(values.scanInterval || 300000);
+let running = true;
 
 if (!['both', 'buy', 'sell'].includes(sideFilter)) {
   throw new Error('--side must be both, buy, or sell.');
 }
+
+process.on('SIGINT', () => { running = false; });
+process.on('SIGTERM', () => { running = false; });
 
 function round(value, places = 2) {
   const scale = 10 ** places;
@@ -191,6 +200,22 @@ async function getMarketBias(symbols) {
   return 'neutral';
 }
 
+async function runScan(uniqueSymbols) {
+  const marketBias = await getMarketBias(uniqueSymbols);
+  const scans = [];
+
+  for (const symbol of uniqueSymbols) {
+    try {
+      const bars = await readBarsFor(symbol);
+      if (bars.length >= 60) scans.push(analyzeBars(symbol, bars, marketBias));
+    } catch (err) {
+      process.stderr.write(`[scan] skipped ${symbol}: ${err.message}\n`);
+    }
+  }
+
+  return { marketBias, candidates: selectCandidates(scans) };
+}
+
 function selectCandidates(scans) {
   const candidates = [];
   for (const scan of scans) {
@@ -245,10 +270,6 @@ async function monitorCandidate(candidate) {
   let entered = false;
   let target1Hit = false;
   let target2Hit = false;
-  let running = true;
-  process.on('SIGINT', () => { running = false; });
-  process.on('SIGTERM', () => { running = false; });
-
   while (running) {
     const quote = await getQuote({});
     const price = quote.last ?? quote.close;
@@ -282,23 +303,23 @@ async function main() {
   const uniqueSymbols = [...new Set(symbols)].slice(0, 30);
   if (uniqueSymbols.length === 0) throw new Error('No symbols found. Open your watchlist or pass --symbols.');
 
-  const marketBias = await getMarketBias(uniqueSymbols);
-  const scans = [];
+  do {
+    const { marketBias, candidates } = await runScan(uniqueSymbols);
+    await sendTelegram(formatScan(candidates, marketBias));
 
-  for (const symbol of uniqueSymbols) {
-    try {
-      const bars = await readBarsFor(symbol);
-      if (bars.length >= 60) scans.push(analyzeBars(symbol, bars, marketBias));
-    } catch (err) {
-      process.stderr.write(`[scan] skipped ${symbol}: ${err.message}\n`);
+    if (values.watch && candidates[0]) {
+      await monitorCandidate(candidates[0]);
+      if (!values.loop) break;
     }
-  }
 
-  const candidates = selectCandidates(scans);
-  await sendTelegram(formatScan(candidates, marketBias));
+    if (values.loop && running) {
+      await sendTelegram(`<b>Next smart scan scheduled</b>\nWaiting ${Math.round(scanInterval / 60000)} minute(s).`);
+      await new Promise(resolve => setTimeout(resolve, scanInterval));
+    }
+  } while (values.loop && running);
 
-  if (values.watch && candidates[0]) {
-    await monitorCandidate(candidates[0]);
+  if (!running) {
+    await sendTelegram('<b>TradingView smart scanner stopped</b>');
   }
 }
 
